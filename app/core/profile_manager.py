@@ -19,14 +19,24 @@ class ProfileManager:
         self.current_profile = None
     
     @staticmethod
-    def hash_username(username: str, salt: str = None) -> tuple:
+    def hash_string(value: str, salt: str = None) -> tuple:
+        """Hash string with SHA-256
+        
+        Args:
+            value: String to hash
+            salt: Optional salt
+        
+        Returns:
+            (hashed_string, salt) tuple
+        """
         if salt is None:
             salt = secrets.token_hex(16)
         
-        hash_obj = hashlib.sha256((username + salt).encode())
+        hash_obj = hashlib.sha256((value + salt).encode())
         return f"{salt}${hash_obj.hexdigest()}", salt
     
     def generate_profile_id(self) -> str:
+        """Generate unique profile ID"""
         existing_ids = []
         
         if self.profiles_dir.exists():
@@ -41,8 +51,21 @@ class ProfileManager:
         next_id = max(existing_ids) + 1 if existing_ids else 1
         return f"profile_{next_id:06d}"
     
-    def create_profile(self, name: str = "", username: str = "", 
-                      profile_url: str = "", memo: str = "") -> str:
+    def create_profile(self, username: str = "", name: str = "", 
+                      job: str = "", profile_url: str = "", 
+                      memo: str = "") -> str:
+        """Create new profile
+        
+        Args:
+            username: Public username (will be hashed)
+            name: Public name (will be hashed)
+            job: Job/occupation
+            profile_url: Profile URL
+            memo: Memo/notes
+        
+        Returns:
+            Profile ID
+        """
         try:
             profile_id = self.generate_profile_id()
             profile_dir = self.profiles_dir / profile_id
@@ -51,19 +74,27 @@ class ProfileManager:
             (profile_dir / "photos").mkdir(exist_ok=True)
             (profile_dir / "face").mkdir(exist_ok=True)
             
+            # Hash name and username
+            name_hash = None
+            if name and len(name.strip()) > 0:
+                name_hash, _ = self.hash_string(name)
+            
             username_hash = None
             if username and len(username.strip()) > 0:
-                username_hash, _ = self.hash_username(username)
+                username_hash, _ = self.hash_string(username)
             
             profile_data = {
                 "profile_id": profile_id,
-                "name": name,
+                "name_hash": name_hash,
                 "username_hash": username_hash,
+                "job": job,
                 "profile_url": profile_url,
                 "memo": memo,
                 "consent": True,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
+                "face_photos": [],
+                "contacts": [],
                 "sns_profiles": [],
                 "search_results": [],
             }
@@ -81,6 +112,14 @@ class ProfileManager:
             raise
     
     def load_profile(self, profile_id: str) -> Optional[Dict[str, Any]]:
+        """Load profile from file
+        
+        Args:
+            profile_id: Profile ID to load
+        
+        Returns:
+            Profile data or None
+        """
         try:
             profile_file = self.profiles_dir / profile_id / "profile.json"
             
@@ -98,6 +137,15 @@ class ProfileManager:
             return None
     
     def save_profile(self, profile_id: str, data: Dict[str, Any]) -> bool:
+        """Save profile to file
+        
+        Args:
+            profile_id: Profile ID
+            data: Profile data to save
+        
+        Returns:
+            True if successful
+        """
         try:
             profile_file = self.profiles_dir / profile_id / "profile.json"
             data['updated_at'] = datetime.now().isoformat()
@@ -113,6 +161,16 @@ class ProfileManager:
             return False
     
     def add_search_result(self, profile_id: str, source: str, result: Dict[str, Any]) -> bool:
+        """Add search result to profile
+        
+        Args:
+            profile_id: Profile ID
+            source: Source name (e.g., "Sherlock")
+            result: Search result data
+        
+        Returns:
+            True if successful
+        """
         try:
             profile_data = self.load_profile(profile_id)
             if not profile_data:
@@ -134,7 +192,73 @@ class ProfileManager:
             self.logger.error(f"Error adding search result: {e}")
             return False
     
+    def add_contact(self, profile_id: str, contact_type: str, value: str) -> bool:
+        """Add contact information
+        
+        Args:
+            profile_id: Profile ID
+            contact_type: Type (email, phone, etc.)
+            value: Contact value
+        
+        Returns:
+            True if successful
+        """
+        try:
+            profile_data = self.load_profile(profile_id)
+            if not profile_data:
+                return False
+            
+            if 'contacts' not in profile_data:
+                profile_data['contacts'] = []
+            
+            contact_entry = {
+                "type": contact_type,
+                "value": value,
+                "source": "Sherlock",
+                "timestamp": datetime.now().isoformat(),
+            }
+            
+            profile_data['contacts'].append(contact_entry)
+            return self.save_profile(profile_id, profile_data)
+        
+        except Exception as e:
+            self.logger.error(f"Error adding contact: {e}")
+            return False
+    
+    def add_face_photo(self, profile_id: str, photo_url: str, source: str) -> bool:
+        """Add face photo reference
+        
+        Args:
+            profile_id: Profile ID
+            photo_url: Photo URL
+            source: Source platform
+        
+        Returns:
+            True if successful
+        """
+        try:
+            profile_data = self.load_profile(profile_id)
+            if not profile_data:
+                return False
+            
+            if 'face_photos' not in profile_data:
+                profile_data['face_photos'] = []
+            
+            photo_entry = {
+                "url": photo_url,
+                "source": source,
+                "timestamp": datetime.now().isoformat(),
+            }
+            
+            profile_data['face_photos'].append(photo_entry)
+            return self.save_profile(profile_id, profile_data)
+        
+        except Exception as e:
+            self.logger.error(f"Error adding face photo: {e}")
+            return False
+    
     def get_all_profiles(self) -> list:
+        """Get list of all profiles"""
         profiles = []
         
         if self.profiles_dir.exists():
@@ -145,6 +269,14 @@ class ProfileManager:
         return profiles
     
     def delete_profile(self, profile_id: str) -> bool:
+        """Delete profile
+        
+        Args:
+            profile_id: Profile ID to delete
+        
+        Returns:
+            True if successful
+        """
         try:
             import shutil
             profile_dir = self.profiles_dir / profile_id
