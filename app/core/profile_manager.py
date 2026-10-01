@@ -1,88 +1,56 @@
-"""Profile manager module"""
+"""Core profile manager with search result and contact management."""
+import hashlib
 import json
 import logging
-from pathlib import Path
-from datetime import datetime
-from typing import Dict, Any, Optional
-import hashlib
 import secrets
-from app.config.settings import global_settings
+import shutil
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from app.db.audit_db import log_event
 
 logger = logging.getLogger(__name__)
 
+
 class ProfileManager:
-    """Manages profile creation, loading, and saving"""
-    
-    def __init__(self):
+    def __init__(self, data_dir: str = "app/data"):
+        self.profiles_dir = Path(data_dir) / "profiles"
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
-        self.profiles_dir = Path(global_settings.get("data_dir"))
-        self.current_profile = None
-    
+
     @staticmethod
-    def hash_string(value: str, salt: str = None) -> tuple:
-        """Hash string with SHA-256
-        
-        Args:
-            value: String to hash
-            salt: Optional salt
-        
-        Returns:
-            (hashed_string, salt) tuple
-        """
+    def hash_string(value: str, salt: Optional[str] = None) -> tuple:
         if salt is None:
             salt = secrets.token_hex(16)
-        
         hash_obj = hashlib.sha256((value + salt).encode())
         return f"{salt}${hash_obj.hexdigest()}", salt
-    
+
     def generate_profile_id(self) -> str:
-        """Generate unique profile ID"""
-        existing_ids = []
-        
+        existing = []
         if self.profiles_dir.exists():
-            for profile_dir in self.profiles_dir.iterdir():
-                if profile_dir.is_dir() and profile_dir.name.startswith("profile_"):
+            for d in self.profiles_dir.iterdir():
+                if d.is_dir() and d.name.startswith("profile_"):
                     try:
-                        profile_num = int(profile_dir.name.split("_")[1])
-                        existing_ids.append(profile_num)
+                        num = int(d.name.split("_")[1])
+                        existing.append(num)
                     except (ValueError, IndexError):
-                        continue
-        
-        next_id = max(existing_ids) + 1 if existing_ids else 1
+                        pass
+        next_id = max(existing) + 1 if existing else 1
         return f"profile_{next_id:06d}"
-    
-    def create_profile(self, username: str = "", name: str = "", 
-                      job: str = "", profile_url: str = "", 
-                      memo: str = "") -> str:
-        """Create new profile
-        
-        Args:
-            username: Public username (will be hashed)
-            name: Public name (will be hashed)
-            job: Job/occupation
-            profile_url: Profile URL
-            memo: Memo/notes
-        
-        Returns:
-            Profile ID
-        """
+
+    def create_profile(self, username: str = "", name: str = "", job: str = "",
+                       profile_url: str = "", memo: str = "") -> str:
         try:
             profile_id = self.generate_profile_id()
             profile_dir = self.profiles_dir / profile_id
-            
             profile_dir.mkdir(parents=True, exist_ok=True)
             (profile_dir / "photos").mkdir(exist_ok=True)
             (profile_dir / "face").mkdir(exist_ok=True)
-            
-            # Hash name and username
-            name_hash = None
-            if name and len(name.strip()) > 0:
-                name_hash, _ = self.hash_string(name)
-            
-            username_hash = None
-            if username and len(username.strip()) > 0:
-                username_hash, _ = self.hash_string(username)
-            
+
+            name_hash = self.hash_string(name)[0] if name and name.strip() else None
+            username_hash = self.hash_string(username)[0] if username and username.strip() else None
+
             profile_data = {
                 "profile_id": profile_id,
                 "name_hash": name_hash,
@@ -91,202 +59,141 @@ class ProfileManager:
                 "profile_url": profile_url,
                 "memo": memo,
                 "consent": True,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "updated_at": datetime.utcnow().isoformat() + "Z",
                 "face_photos": [],
                 "contacts": [],
                 "sns_profiles": [],
                 "search_results": [],
+                "search_history": [],
+                "image_references": [],
             }
-            
-            profile_file = profile_dir / "profile.json"
-            with open(profile_file, 'w', encoding='utf-8') as f:
+
+            with open(profile_dir / "profile.json", "w", encoding="utf-8") as f:
                 json.dump(profile_data, f, indent=2, ensure_ascii=False)
-            
-            self.current_profile = profile_data
-            self.logger.info(f"Profile created: {profile_id}")
+
+            log_event("profile_create", "profile", profile_id, "system", status="success",
+                      details={"username": username, "job": job})
             return profile_id
-        
         except Exception as e:
-            self.logger.error(f"Error creating profile: {e}")
+            log_event("profile_create", "profile", status="failure", error_message=str(e))
             raise
-    
+
     def load_profile(self, profile_id: str) -> Optional[Dict[str, Any]]:
-        """Load profile from file
-        
-        Args:
-            profile_id: Profile ID to load
-        
-        Returns:
-            Profile data or None
-        """
         try:
-            profile_file = self.profiles_dir / profile_id / "profile.json"
-            
-            if not profile_file.exists():
+            path = self.profiles_dir / profile_id / "profile.json"
+            if not path.exists():
                 return None
-            
-            with open(profile_file, 'r', encoding='utf-8') as f:
-                profile_data = json.load(f)
-            
-            self.current_profile = profile_data
-            return profile_data
-        
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
         except Exception as e:
-            self.logger.error(f"Error loading profile: {e}")
+            logger.error(f"Could not load {profile_id}: {e}")
             return None
-    
+
     def save_profile(self, profile_id: str, data: Dict[str, Any]) -> bool:
-        """Save profile to file
-        
-        Args:
-            profile_id: Profile ID
-            data: Profile data to save
-        
-        Returns:
-            True if successful
-        """
         try:
-            profile_file = self.profiles_dir / profile_id / "profile.json"
-            data['updated_at'] = datetime.now().isoformat()
-            
-            with open(profile_file, 'w', encoding='utf-8') as f:
+            before = self.load_profile(profile_id)
+            path = self.profiles_dir / profile_id / "profile.json"
+            data["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            
-            self.current_profile = data
+            log_event("profile_update", "profile", profile_id, "system", status="success",
+                      before_data=before, after_data=data)
             return True
-        
         except Exception as e:
-            self.logger.error(f"Error saving profile: {e}")
+            logger.error(f"Could not save {profile_id}: {e}")
+            log_event("profile_update", "profile", profile_id, status="failure", error_message=str(e))
             return False
-    
+
     def add_search_result(self, profile_id: str, source: str, result: Dict[str, Any]) -> bool:
-        """Add search result to profile
-        
-        Args:
-            profile_id: Profile ID
-            source: Source name (e.g., "Sherlock")
-            result: Search result data
-        
-        Returns:
-            True if successful
-        """
-        try:
-            profile_data = self.load_profile(profile_id)
-            if not profile_data:
-                return False
-            
-            if 'search_results' not in profile_data:
-                profile_data['search_results'] = []
-            
-            search_entry = {
-                "source": source,
-                "timestamp": datetime.now().isoformat(),
-                "result": result,
-            }
-            
-            profile_data['search_results'].append(search_entry)
-            return self.save_profile(profile_id, profile_data)
-        
-        except Exception as e:
-            self.logger.error(f"Error adding search result: {e}")
+        profile = self.load_profile(profile_id)
+        if not profile:
             return False
-    
+        profile.setdefault("search_results", []).append({
+            "source": source,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "result": result,
+        })
+        log_event("search_result_add", "profile", profile_id, "system", status="success",
+                  details={"source": source, "platform": result.get("name")})
+        return self.save_profile(profile_id, profile)
+
     def add_contact(self, profile_id: str, contact_type: str, value: str) -> bool:
-        """Add contact information
-        
-        Args:
-            profile_id: Profile ID
-            contact_type: Type (email, phone, etc.)
-            value: Contact value
-        
-        Returns:
-            True if successful
-        """
-        try:
-            profile_data = self.load_profile(profile_id)
-            if not profile_data:
-                return False
-            
-            if 'contacts' not in profile_data:
-                profile_data['contacts'] = []
-            
-            contact_entry = {
-                "type": contact_type,
-                "value": value,
-                "source": "Sherlock",
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-            profile_data['contacts'].append(contact_entry)
-            return self.save_profile(profile_id, profile_data)
-        
-        except Exception as e:
-            self.logger.error(f"Error adding contact: {e}")
+        profile = self.load_profile(profile_id)
+        if not profile:
             return False
-    
+        profile.setdefault("contacts", []).append({
+            "type": contact_type,
+            "value": value,
+            "source": "Sherlock",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        })
+        log_event("contact_add", "profile", profile_id, "system", status="success",
+                  details={"type": contact_type})
+        return self.save_profile(profile_id, profile)
+
     def add_face_photo(self, profile_id: str, photo_url: str, source: str) -> bool:
-        """Add face photo reference
-        
-        Args:
-            profile_id: Profile ID
-            photo_url: Photo URL
-            source: Source platform
-        
-        Returns:
-            True if successful
-        """
-        try:
-            profile_data = self.load_profile(profile_id)
-            if not profile_data:
-                return False
-            
-            if 'face_photos' not in profile_data:
-                profile_data['face_photos'] = []
-            
-            photo_entry = {
-                "url": photo_url,
-                "source": source,
-                "timestamp": datetime.now().isoformat(),
-            }
-            
-            profile_data['face_photos'].append(photo_entry)
-            return self.save_profile(profile_id, profile_data)
-        
-        except Exception as e:
-            self.logger.error(f"Error adding face photo: {e}")
+        profile = self.load_profile(profile_id)
+        if not profile:
             return False
-    
-    def get_all_profiles(self) -> list:
-        """Get list of all profiles"""
-        profiles = []
-        
-        if self.profiles_dir.exists():
-            for profile_dir in sorted(self.profiles_dir.iterdir()):
-                if profile_dir.is_dir() and profile_dir.name.startswith("profile_"):
-                    profiles.append(profile_dir.name)
-        
-        return profiles
-    
+        profile.setdefault("face_photos", []).append({
+            "url": photo_url,
+            "source": source,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        })
+        log_event("face_photo_add", "profile", profile_id, "system", status="success",
+                  details={"source": source})
+        return self.save_profile(profile_id, profile)
+
+    def add_web_search_result(self, profile_id: str, query: str,
+                              results: List[Dict[str, Any]]) -> bool:
+        profile = self.load_profile(profile_id)
+        if not profile:
+            return False
+        profile.setdefault("search_history", []).append({
+            "kind": "web_search",
+            "query": query,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "results": results,
+        })
+        log_event("web_search_add", "profile", profile_id, "system", status="success",
+                  details={"query": query, "result_count": len(results)})
+        return self.save_profile(profile_id, profile)
+
+    def add_image_reference(self, profile_id: str, image_url: str,
+                            source: str = "profile") -> bool:
+        profile = self.load_profile(profile_id)
+        if not profile:
+            return False
+        profile.setdefault("image_references", []).append({
+            "url": image_url,
+            "source": source,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+        })
+        log_event("image_reference_add", "profile", profile_id, "system", status="success",
+                  details={"source": source})
+        return self.save_profile(profile_id, profile)
+
+    def get_all_profiles(self) -> List[str]:
+        if not self.profiles_dir.exists():
+            return []
+        return sorted([d.name for d in self.profiles_dir.iterdir()
+                      if d.is_dir() and d.name.startswith("profile_")])
+
     def delete_profile(self, profile_id: str) -> bool:
-        """Delete profile
-        
-        Args:
-            profile_id: Profile ID to delete
-        
-        Returns:
-            True if successful
-        """
         try:
-            import shutil
+            before = self.load_profile(profile_id)
             profile_dir = self.profiles_dir / profile_id
-            
             if profile_dir.exists():
                 shutil.rmtree(profile_dir)
+                log_event("profile_delete", "profile", profile_id, "system", status="success",
+                          before_data=before)
                 return True
-            
+            log_event("profile_delete", "profile", profile_id, status="failure",
+                      error_message="Profile dir not found")
             return False
-        
         except Exception as e:
-            self.logger.error(f"Error deleting profile: {e}")
+            logger.error(f"Could not delete {profile_id}: {e}")
+            log_event("profile_delete", "profile", profile_id, status="failure",
+                      error_message=str(e))
             return False
