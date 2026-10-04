@@ -1,4 +1,4 @@
-"""Main entry point with full UI, audit, RBAC, and enrichment."""
+"""Main UI window with progress tracking for searches."""
 import json
 import logging
 import threading
@@ -12,6 +12,7 @@ from app.notifications.notifier import NotificationService
 from app.security.access_control import AccessController
 from app.sources.sherlock_wrapper import SherlockWrapper
 from app.sources.web_search import WebSearchClient
+from app.utils.progress import get_progress_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class MainWindow:
         self.profile_manager = ProfileManager()
         self.sherlock = SherlockWrapper()
         self.web_search = WebSearchClient()
+        self.progress = get_progress_tracker()
 
         self.current_profile_id = None
         self.current_profile_data = None
@@ -116,8 +118,11 @@ class MainWindow:
         self.web_search_button.pack(side="left", padx=5)
         self.save_button = ttk.Button(actions, text="Save Profile", command=self._save_profile)
         self.save_button.pack(side="left", padx=5)
-        self.progress = ttk.Progressbar(actions, length=250, mode="determinate")
-        self.progress.pack(side="left", padx=10)
+        
+        self.progress_var = tk.DoubleVar(value=0)
+        self.progress_bar = ttk.Progressbar(actions, variable=self.progress_var, 
+                                           orient="horizontal", length=250, mode="determinate")
+        self.progress_bar.pack(side="left", padx=10)
         self.progress_label = ttk.Label(actions, text="")
         self.progress_label.pack(side="left")
 
@@ -281,12 +286,20 @@ class MainWindow:
             messagebox.showwarning("Warning", "Please enter a username first")
             return
 
-        self.progress["value"] = 0
+        self.progress_var.set(0)
         self.progress_label.config(text="検索中...")
+        self.progress.set_callback(lambda p, m: self._update_progress(p, m))
+        self.progress.start(5)
 
         def worker():
-            results = self.sherlock.search(username)
-            self.root.after(0, lambda: self._finish_search(results))
+            try:
+                self.progress.step("Sherlockを初期化...")
+                results = self.sherlock.search(username)
+                self.progress.step(f"{len(results)}件の結果を処理中...")
+                self.root.after(0, lambda: self._finish_search(results))
+            except Exception as e:
+                logger.exception(f"Search failed: {e}")
+                self.root.after(0, lambda: self._finish_search([]))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -307,18 +320,34 @@ class MainWindow:
         if not query:
             return
 
-        self.progress["value"] = 0
+        self.progress_var.set(0)
         self.progress_label.config(text="Web検索中...")
+        self.progress.set_callback(lambda p, m: self._update_progress(p, m))
+        self.progress.start(3)
 
         def worker():
-            results = self.web_search.search(query, limit=10)
-            self.root.after(0, lambda: self._finish_web_search(results, query))
+            try:
+                self.progress.step("検索エンジンに接続中...")
+                results = self.web_search.search(query, limit=10)
+                self.progress.step(f"{len(results)}件の結果を処理中...")
+                self.root.after(0, lambda: self._finish_web_search(results, query))
+            except Exception as e:
+                logger.exception(f"Web search failed: {e}")
+                self.root.after(0, lambda: self._finish_web_search([], query))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _update_progress(self, percent, message):
+        """Update progress bar from callback."""
+        self.progress_var.set(percent)
+        self.progress_label.config(text=message)
+        self.root.update()
+
     def _finish_search(self, results):
-        self.progress["value"] = 100
+        self.progress.finish()
+        self.progress_var.set(100)
         self.progress_label.config(text="完了")
+        
         for item in self.results_tree.get_children():
             self.results_tree.delete(item)
         for result in results:
@@ -338,7 +367,8 @@ class MainWindow:
         self._refresh_history()
 
     def _finish_web_search(self, results, query):
-        self.progress["value"] = 100
+        self.progress.finish()
+        self.progress_var.set(100)
         self.progress_label.config(text="完了")
         self.profile_manager.add_web_search_result(self.current_profile_id, query, results)
         self._record("web_search_complete", "profile", self.current_profile_id,

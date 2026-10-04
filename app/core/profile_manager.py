@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.db.audit_db import log_event
+from app.utils.progress import get_progress_tracker
 
 logger = logging.getLogger(__name__)
 
