@@ -8,6 +8,7 @@ setlocal enabledelayedexpansion
 
 set ROOT=%~dp0
 set VENV_PATH=%ROOT%venv
+set APP_MAIN=%ROOT%app\main.py
 set PYTHON_EXE=
 
 cls
@@ -17,7 +18,7 @@ echo  ProfileOSINT EXE Builder
 echo ============================================
 echo.
 
-echo [1/5] Checking Python...
+echo [1/6] Checking Python...
 
 if exist "%VENV_PATH%\Scripts\python.exe" (
     set PYTHON_EXE=%VENV_PATH%\Scripts\python.exe
@@ -35,7 +36,14 @@ if exist "%VENV_PATH%\Scripts\python.exe" (
     set PYTHON_EXE=%VENV_PATH%\Scripts\python.exe
 )
 
-echo [2/5] Installing PyInstaller...
+echo [2/6] Checking entry point...
+if exist "%APP_MAIN%" (
+    echo [OK] Found app/main.py
+) else (
+    echo [WARN] app/main.py not found. Build may fail if entry point path is different.
+)
+
+echo [3/6] Installing PyInstaller...
 "%PYTHON_EXE%" -m pip install pyinstaller --quiet
 
 if errorlevel 1 (
@@ -46,14 +54,21 @@ if errorlevel 1 (
 
 echo [OK] PyInstaller ready
 
-echo [3/5] Cleaning old build output...
+echo [4/6] Cleaning old build output...
 if exist "%ROOT%build" rmdir /s /q "%ROOT%build"
 if exist "%ROOT%dist" rmdir /s /q "%ROOT%dist"
 
 echo [OK] Cleaned build folders
 
-echo [4/5] Building EXE...
-"%PYTHON_EXE%" -m PyInstaller --onefile --windowed --name ProfileOSINT app/main.py
+echo [5/6] Building EXE...
+if exist "%APP_MAIN%" (
+    "%PYTHON_EXE%" -m PyInstaller --onefile --windowed --name ProfileOSINT "%APP_MAIN%"
+) else (
+    echo [ERROR] No valid entry point found for EXE build.
+    echo [INFO] Add app/main.py or update this script to point to the actual project entry file.
+    pause
+    exit /b 1
+)
 
 if errorlevel 1 (
     echo [ERROR] EXE build failed.
@@ -63,7 +78,7 @@ if errorlevel 1 (
 
 echo [OK] Build finished
 
-echo [5/5] Build complete.
+echo [6/6] Build complete.
 
 echo.
 echo Output file:
